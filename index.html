@@ -201,6 +201,19 @@
   .pip.filled{background:var(--cyan);box-shadow:0 0 6px rgba(79,240,255,0.6);}
   .upgrade-next{font-size:12px;color:var(--text-faint);}
   .upgrade-cost{color:var(--amber);}
+  .weapon-card.owned{border-color:rgba(79,240,255,0.35);}
+
+  /* ---------- weapon loadout (primary/secondary slot picker) ---------- */
+  .loadout-row{display:flex;gap:16px;flex-wrap:wrap;}
+  .loadout-slot{flex:1;min-width:220px;}
+  .loadout-slot-label{font-family:'Orbitron',sans-serif;font-size:11px;letter-spacing:1.5px;color:var(--text-dim);margin-bottom:6px;}
+  .loadout-chip-row{display:flex;flex-wrap:wrap;gap:6px;}
+  .loadout-chip{
+    background:var(--panel-alt);border:1px solid var(--line);color:var(--text-dim);
+    font-family:'Rajdhani',sans-serif;font-size:13px;padding:6px 10px;cursor:pointer;
+  }
+  .loadout-chip.active{border-color:var(--cyan);color:var(--cyan);box-shadow:0 0 6px rgba(79,240,255,0.4);}
+  .loadout-chip:hover{border-color:var(--cyan);}
 
   /* ---------- HUD ---------- */
   #hud{position:fixed;inset:0;z-index:20;pointer-events:none;font-family:'Orbitron',sans-serif;}
@@ -346,7 +359,11 @@
               <canvas id="blueprintCanvas" width="220" height="260"></canvas>
             </div>
             <div class="panel" id="upgradesPanel">
-              <div class="eyebrow" style="margin-bottom:10px;">Ship Upgrades</div>
+              <div class="eyebrow" style="margin-bottom:10px;">Loadout</div>
+              <div class="loadout-row" id="loadoutRow"></div>
+              <div class="eyebrow" style="margin:16px 0 10px;">Weapons Shop</div>
+              <div class="upgrade-grid" id="weaponShopGrid"></div>
+              <div class="eyebrow" style="margin:16px 0 10px;">Ship Systems</div>
               <div class="upgrade-grid" id="upgradeGrid"></div>
             </div>
           </div>
@@ -460,17 +477,6 @@ function filterInPlace(arr, keepFn){ let w=0; for(let i=0;i<arr.length;i++){ if(
 
 /* ---------------------------- config ---------------------------- */
 const UPGRADE_TRACKS = {
-  weapon:{
-    name:'Weapons',
-    levels:[
-      {cooldown:0.38, bulletSpeed:520, damage:1, cost:0},
-      {cooldown:0.30, bulletSpeed:560, damage:1, cost:120},
-      {cooldown:0.23, bulletSpeed:600, damage:2, cost:220},
-      {cooldown:0.16, bulletSpeed:650, damage:2, cost:380},
-      {cooldown:0.07, bulletSpeed:800, damage:3, cost:10000},
-    ],
-    desc:l=>`Fire rate ${(1/l.cooldown).toFixed(1)}/s · Damage ${l.damage}`,
-  },
   engine:{
     name:'Engine',
     levels:[
@@ -504,18 +510,98 @@ const UPGRADE_TRACKS = {
     ],
     desc:l=> l.maxCharges===0 ? 'No shield generator installed' : `Charges ${l.maxCharges} · Regen ${l.regenTime.toFixed(1)}s`,
   },
-  missiles:{
-    name:'Missiles',
-    levels:[
-      {count:0, cooldown:0,   damage:0, splash:0,  cost:0},
-      {count:1, cooldown:3.0, damage:4, splash:42, cost:200},
-      {count:1, cooldown:2.2, damage:5, splash:56, cost:340},
-      {count:2, cooldown:1.8, damage:6, splash:70, cost:520},
-      {count:5, cooldown:1.2, damage:10, splash:80, cost:10000},
-    ],
-    desc:l=> l.count===0 ? 'No missile rack installed' : `${l.count}× rack · ${l.damage} dmg · ${l.splash}px splash`,
+};
+
+/* ---------------------------- weapon shop ----------------------------
+   Weapons are no longer leveled up along a single ladder — each entry below is a standalone,
+   one-time purchase (see game.upgrades.ownedWeapons). Once owned, a weapon can be freely
+   equipped to EITHER the primary (Space) or secondary (Shift) slot — see
+   game.upgrades.equipped and Ship.stats/Ship.update() below. A weapon's `type` decides what
+   actually gets fired when it's equipped (see fireWeaponShots()):
+     'ballistic' -> spawns Bullet(s): simple hit-scan-style projectiles, no splash.
+     'explosive' -> spawns Missile(s): splash damage on impact/expiry, optionally `homing`.
+     'mine'      -> drops a stationary Mine behind the ship that arms, then detonates on
+                    proximity (see the Mine class further down).
+   `count` + `spreadAngle` (radians, total arc) fan multiple projectiles from a single shot —
+   used by Twin Blaster, Scatter Cannon, Twin Missile Rack and Cluster Rocket. A weapon with
+   count:1 ignores spreadAngle entirely.
+   To add a new weapon: add an entry here. No other code needs to change UNLESS you're
+   introducing a genuinely new `type` (a future beam weapon, for example, needs its own
+   continuous-fire/line-collision logic — deliberately not attempted here, see project notes). */
+const WEAPONS = {
+  pulse_cannon:{
+    name:'Pulse Cannon', type:'ballistic', cost:0,
+    cooldown:0.38, bulletSpeed:520, damage:1, count:1,
+    desc:'Fire rate 2.6/s · Damage 1 — reliable starter sidearm.',
+  },
+  rapid_autocannon:{
+    name:'Rapid Autocannon', type:'ballistic', cost:250,
+    cooldown:0.16, bulletSpeed:700, damage:1, count:1,
+    desc:'Fire rate 6.3/s · Damage 1 — high rate of fire, good vs swarms.',
+  },
+  twin_blaster:{
+    name:'Twin Blaster', type:'ballistic', cost:320,
+    cooldown:0.30, bulletSpeed:560, damage:1, count:2, spreadAngle:0.10,
+    desc:'Fire rate 3.3/s · Damage 1×2 — fires a tight pair of bolts per shot.',
+  },
+  scatter_cannon:{
+    name:'Scatter Cannon', type:'ballistic', cost:340,
+    cooldown:1.0, bulletSpeed:520, damage:1, count:5, spreadAngle:0.70,
+    desc:'Fire rate 1/s · Damage 1×5 — wide 40° fan, devastating up close.',
+  },
+  plasma_lance:{
+    name:'Plasma Lance', type:'ballistic', cost:500,
+    cooldown:0.50, bulletSpeed:700, damage:3, count:1,
+    desc:'Fire rate 2.0/s · Damage 3 — slower, hits hard, fast bolt.',
+  },
+  railgun:{
+    name:'Railgun', type:'ballistic', cost:650,
+    cooldown:0.65, bulletSpeed:950, damage:5, count:1,
+    desc:'Fire rate 1.5/s · Damage 5 — heaviest single-hit ballistic weapon.',
+  },
+  missile_rack:{
+    name:'Missile Rack', type:'explosive', cost:200,
+    cooldown:3.0, damage:4, splash:42, count:1,
+    desc:'1× rack · 4 dmg · 42px splash — your basic missile launcher.',
+  },
+  twin_missile_rack:{
+    name:'Twin Missile Rack', type:'explosive', cost:400,
+    cooldown:2.2, damage:5, splash:56, count:2, spreadAngle:0.24,
+    desc:'2× rack · 5 dmg · 56px splash — fires a pair per volley.',
+  },
+  seeker_missile:{
+    name:'Seeker Missile', type:'explosive', cost:450,
+    cooldown:3.2, damage:4, splash:40, count:1, homing:true, turnRate:3.2,
+    desc:'1× rack · 4 dmg · 40px splash · homes in on the nearest target.',
+  },
+  proximity_mine:{
+    name:'Proximity Mine', type:'mine', cost:380,
+    cooldown:1.8, damage:5, splash:60, armTime:0.8,
+    desc:'5 dmg · 60px splash — drops behind you, arms in 0.8s, triggers on proximity.',
+  },
+  cluster_rocket:{
+    name:'Cluster Rocket', type:'explosive', cost:480,
+    cooldown:3.5, damage:3, splash:90, count:3, spreadAngle:0.36,
+    desc:'3× rack · 3 dmg · 90px splash — wide spread, biggest blast radius.',
+  },
+  torpedo:{
+    name:'Torpedo', type:'explosive', cost:650,
+    cooldown:4.5, damage:12, splash:60, count:1,
+    desc:'1× rack · 12 dmg · 60px splash — slow reload, boss-killer payload.',
+  },
+  neutron_blast:{
+    name:'Neutron Blast', type:'explosive', cost:10000,
+    cooldown:6.5, damage:3, splash:10, count:15, spreadAngle:0.75,
+    desc:'15× rack · 3 dmg · 10px splash — fire a 270 degree spread blast of 15 tiny missiles.',
   },
 };
+
+// Refund table for players migrating off the old leveled weapon/missile tracks (see
+// migrateLegacyUpgrades() below) — cumulative cost to reach each old level, copied from the
+// pre-shop UPGRADE_TRACKS.weapon/.missiles cost columns before they were deleted. Only used
+// for computing that one-time refund; nothing else reads these.
+const LEGACY_WEAPON_COSTS  = [0, 120, 220, 380, 10000];
+const LEGACY_MISSILE_COSTS = [0, 200, 340, 520, 10000];
 
 const MISSIONS = [
   {id:'m1', name:'Training Run',   brief:'Clear a light asteroid field to prove you can fly.',            type:'asteroids', target:5,  spawn:{asteroidInterval:1.4, enemyInterval:Infinity}, reward:100},
@@ -534,7 +620,7 @@ const MISSIONS = [
   // bossConfig fully controls its stats — tune per-mission without touching any code below.
   {id:'m8', name:'The Dreadnought', brief:'A capital-class warship has entered the sector. Bring it down.', type:'boss', bossName:'Dreadnought',
     spawn:{asteroidInterval:3.5, enemyInterval:Infinity},
-    bossConfig:{radius:38, hp:75, speed:110, fireInterval:0.55, bulletSpeed:340, burstCount:3},
+    bossConfig:{radius:38, hp:75, speed:110, fireInterval:0.55, bulletSpeed:400, burstCount:5},
     reward:450},
 
   {id:'m9', name:'Debris Storm',   brief:'A shattered moon has filled the sector with dense, fast rock.',  type:'asteroids', target:16, spawn:{asteroidInterval:0.5, enemyInterval:Infinity}, reward:380},
@@ -555,7 +641,7 @@ const MISSIONS = [
 const game = {
   state:'title', // auth | title | hangar | mission | end
   credits:0,
-  upgrades:{weapon:0, engine:0, hull:0, shield:0, missiles:0},
+  upgrades:{engine:0, hull:0, shield:0, ownedWeapons:['pulse_cannon'], equipped:{primary:'pulse_cannon', secondary:null}},
   unlockedMissionIndex:0,
   completedMissions:new Set(),
   selectedMissionId:'m1',
@@ -630,7 +716,7 @@ async function authSignOut(){
   guestMode = false;
   // Reset to clean defaults so the next person to use this browser doesn't inherit this save.
   game.credits = 0;
-  game.upgrades = {weapon:0, engine:0, hull:0, shield:0, missiles:0};
+  game.upgrades = {engine:0, hull:0, shield:0, ownedWeapons:['pulse_cannon'], equipped:{primary:'pulse_cannon', secondary:null}};
   game.unlockedMissionIndex = 0;
   game.completedMissions = new Set();
   game.selectedMissionId = 'm1';
@@ -661,6 +747,32 @@ async function loadProgress(){
   game.upgrades = data.upgrades;
   game.unlockedMissionIndex = data.unlocked_mission_index;
   game.completedMissions = new Set(data.completed_missions);
+  // One-time migration for players saved before the weapon shop refactor (see
+  // migrateLegacyUpgrades below) — their save has numeric weapon/missiles levels instead of
+  // ownedWeapons/equipped. Fix it up in memory, then immediately persist the migrated shape so
+  // this only ever runs once per player.
+  if(migrateLegacyUpgrades(game.upgrades)) await saveProgress();
+}
+
+// Mutates `upgrades` in place, converting the old {weapon:N, missiles:N} leveled-track shape
+// into the new {ownedWeapons, equipped} shop shape. Refunds every credit the player spent
+// climbing those two old ladders (via LEGACY_WEAPON_COSTS/LEGACY_MISSILE_COSTS) so nothing is
+// lost — they just have to re-buy from the new shop with the refund in hand. Returns true if a
+// migration actually happened (so the caller knows whether to re-save), false for already-
+// current saves so this is safe to call unconditionally on every load.
+function migrateLegacyUpgrades(upgrades){
+  const isLegacy = typeof upgrades.weapon === 'number' || typeof upgrades.missiles === 'number';
+  if(!isLegacy) return false;
+  let refund = 0;
+  for(let i=1; i<=(upgrades.weapon||0); i++) refund += LEGACY_WEAPON_COSTS[i];
+  for(let i=1; i<=(upgrades.missiles||0); i++) refund += LEGACY_MISSILE_COSTS[i];
+  game.credits += refund;
+  delete upgrades.weapon;
+  delete upgrades.missiles;
+  upgrades.ownedWeapons = ['pulse_cannon'];
+  upgrades.equipped = {primary:'pulse_cannon', secondary:null};
+  console.log(`Migrated legacy weapon save — refunded ${refund} credits.`);
+  return true;
 }
 
 // Upserts the player's current progress. Called at natural checkpoints (mission complete, upgrade
@@ -718,7 +830,9 @@ const ARENA_KILLS_TABLE      = 'arena_kills';// Postgres table — see arena_set
 const ARENA_USE_CAMPAIGN_STATS = true;
 const ARENA_STATS = {
   thrust:300, maxSpeed:360, turnSpeed:3.8,   // engine
-  cooldown:0.22, bulletSpeed:600, damage:1,  // weapon
+  // Fixed weapon used only when ARENA_USE_CAMPAIGN_STATS is false (equal-footing PvP) — shaped
+  // exactly like a WEAPONS[...] entry so it can be handed straight to fireWeaponShots().
+  primary: {type:'ballistic', cooldown:0.22, bulletSpeed:600, damage:1, count:1},
 };
 
 /* ---------------------------- arena ship (local player) ----------------------------
@@ -745,7 +859,7 @@ class ArenaShip{
     this.health = this.maxHealth;
     this.invulnTimer = hull ? hull.invuln : ARENA_SPAWN_INVULN;
     this.fireCooldown=0;
-    this.missileCooldown=0;
+    this.secondaryCooldown=0;
     this.thrusting=false;
     this.alive=true;
     this.deadTimer=0;
@@ -760,17 +874,17 @@ class ArenaShip{
   }
   get stats(){
     if(!ARENA_USE_CAMPAIGN_STATS) return {
-      ...ARENA_STATS,
+      thrust:ARENA_STATS.thrust, maxSpeed:ARENA_STATS.maxSpeed, turnSpeed:ARENA_STATS.turnSpeed,
+      primary: ARENA_STATS.primary,
+      secondary: null,
       shield:{maxCharges:0, regenTime:0},
-      missile:{count:0, cooldown:0, damage:0, splash:0},
     };
     const eng = UPGRADE_TRACKS.engine.levels[game.upgrades.engine];
-    const wpn = UPGRADE_TRACKS.weapon.levels[game.upgrades.weapon];
     return {
       thrust:eng.thrust, maxSpeed:eng.maxSpeed, turnSpeed:eng.turnSpeed,
-      cooldown:wpn.cooldown, bulletSpeed:wpn.bulletSpeed, damage:wpn.damage,
+      primary: WEAPONS[game.upgrades.equipped.primary],
+      secondary: game.upgrades.equipped.secondary ? WEAPONS[game.upgrades.equipped.secondary] : null,
       shield:UPGRADE_TRACKS.shield.levels[game.upgrades.shield],
-      missile:UPGRADE_TRACKS.missiles.levels[game.upgrades.missiles],
     };
   }
   update(dt){
@@ -801,28 +915,31 @@ class ArenaShip{
       if(this.shieldRegenTimer<=0){ this.shield++; this.shieldRegenTimer = this.shieldRegenTime; }
     }
 
+    // Seeker Missiles in the arena home in on the nearest living remote player instead of
+    // asteroids/enemies — same findNearest() helper, different target lists.
+    const findHomingTarget = ()=> findNearest(this, remotePlayers.values());
+
     this.fireCooldown -= dt;
     if(keys.has('Space') && this.fireCooldown<=0){
-      this.fireCooldown = s.cooldown;
-      const noseX = this.x + Math.sin(this.angle)*this.radius*1.4;
-      const noseY = this.y - Math.cos(this.angle)*this.radius*1.4;
-      arenaBullets.push(new Bullet(noseX,noseY,this.angle,s.bulletSpeed,s.damage));
-      spawnParticles(noseX,noseY,'#4ff0ff',2,0.15,90);
-      arenaBroadcastFire(noseX,noseY,this.angle); // cosmetic bullet on everyone else's screen
+      this.fireCooldown = s.primary.cooldown;
+      const angles = fireWeaponShots(s.primary, this.x, this.y, this.angle, this.radius, arenaBullets, arenaMissiles, arenaMines, findHomingTarget);
+      spawnParticles(this.x + Math.sin(this.angle)*this.radius*1.4, this.y - Math.cos(this.angle)*this.radius*1.4, '#4ff0ff',2,0.15,90);
+      // Cosmetic broadcast only covers the primary shot's origin/angle — other players see one
+      // representative bolt/missile per volley rather than every fanned shot, which is a fine
+      // trade for how rarely multi-shot weapons matter cosmetically vs. the extra network chatter.
+      if(s.primary.type==='ballistic') arenaBroadcastFire(this.x,this.y,angles[0]);
+      else if(s.primary.type==='explosive') arenaBroadcastFireMissile(this.x,this.y,angles[0]);
+      else if(s.primary.type==='mine') arenaBroadcastFireMine(this.x,this.y);
     }
 
-    this.missileCooldown -= dt;
-    if((keys.has('ShiftLeft')||keys.has('ShiftRight')) && s.missile.count>0 && this.missileCooldown<=0){
-      this.missileCooldown = s.missile.cooldown;
-      const offsets = s.missile.count>1 ? [-0.12,0.12] : [0];
-      for(const off of offsets){
-        const a = this.angle+off;
-        const noseX = this.x + Math.sin(a)*this.radius*1.4;
-        const noseY = this.y - Math.cos(a)*this.radius*1.4;
-        arenaMissiles.push(new Missile(noseX,noseY,a,s.missile.damage,s.missile.splash));
-      }
+    this.secondaryCooldown -= dt;
+    if((keys.has('ShiftLeft')||keys.has('ShiftRight')) && s.secondary && this.secondaryCooldown<=0){
+      this.secondaryCooldown = s.secondary.cooldown;
+      const angles = fireWeaponShots(s.secondary, this.x, this.y, this.angle, this.radius, arenaBullets, arenaMissiles, arenaMines, findHomingTarget);
       spawnParticles(this.x,this.y,'#ffb84d',8,0.25,140);
-      arenaBroadcastFireMissile(this.x,this.y,this.angle); // cosmetic missile on everyone else's screen
+      if(s.secondary.type==='ballistic') arenaBroadcastFire(this.x,this.y,angles[0]);
+      else if(s.secondary.type==='explosive') arenaBroadcastFireMissile(this.x,this.y,angles[0]);
+      else if(s.secondary.type==='mine') arenaBroadcastFireMine(this.x,this.y);
     }
   }
   // Called when a broadcast 'hit' event names US as the target, with the amount of damage that
@@ -913,12 +1030,28 @@ class RemoteMissile{
   }
 }
 
+// Cosmetic-only mine from another player's 'firemine' broadcast. Unlike RemoteBullet/
+// RemoteMissile there's no real detonation event broadcast for this — the shooter's own client
+// is the sole authority on when/whether it actually goes off (see arenaMines in updateArena),
+// so this is purely a "something got dropped there" visual that fades on its own after
+// REMOTE_MINE_LIFE seconds rather than tracking real arm/trigger state.
+const REMOTE_MINE_LIFE = 4;
+class RemoteMine{
+  constructor(x,y){
+    this.x=x; this.y=y;
+    this.life=REMOTE_MINE_LIFE;
+  }
+  update(dt){ this.life -= dt; }
+}
+
 /* ---------------------------- arena state ---------------------------- */
 let arenaShip = null;              // this client's ArenaShip, created on entering the arena
 const arenaBullets = [];           // this client's own bullets — collision authority lives here
 const remoteBullets = [];          // cosmetic-only bullets from other players
 const arenaMissiles = [];          // this client's own missiles — collision authority lives here
 const remoteMissiles = [];         // cosmetic-only missiles from other players
+const arenaMines = [];             // this client's own mines — collision authority lives here
+const remoteMines = [];            // cosmetic-only mines from other players (see RemoteMine)
 const remotePlayers = new Map();   // id -> RemotePlayer, everyone else currently in the arena
 const arenaScoreboard = new Map(); // id -> {name, kills} — THIS SESSION's live scoreboard, resets on reload
 let arenaChannel = null;           // the Supabase Realtime channel while connected
@@ -935,7 +1068,8 @@ async function enterArena(){
   if(!AUTH_ENABLED) return; // arenaBtn is hidden in this case anyway (see boot() below)
   arenaMyId = crypto.randomUUID();
   arenaShip = new ArenaShip();
-  arenaBullets.length=0; remoteBullets.length=0; arenaMissiles.length=0; remoteMissiles.length=0; particles.length=0;
+  arenaBullets.length=0; remoteBullets.length=0; arenaMissiles.length=0; remoteMissiles.length=0;
+  arenaMines.length=0; remoteMines.length=0; particles.length=0;
   remotePlayers.clear(); arenaScoreboard.clear(); arenaKillFeed=[];
 
   game.state='arena';
@@ -951,6 +1085,7 @@ async function enterArena(){
     .on('broadcast', {event:'state'}, ({payload})=> arenaHandleState(payload))
     .on('broadcast', {event:'fire'},  ({payload})=> arenaHandleFire(payload))
     .on('broadcast', {event:'firemissile'}, ({payload})=> arenaHandleFireMissile(payload))
+    .on('broadcast', {event:'firemine'}, ({payload})=> arenaHandleFireMine(payload))
     .on('broadcast', {event:'hit'},   ({payload})=> arenaHandleHit(payload))
     .on('broadcast', {event:'kill'},  ({payload})=> arenaHandleKill(payload))
     .on('presence', {event:'join'},  ({key,newPresences})=> arenaHandlePresenceJoin(key,newPresences))
@@ -991,6 +1126,10 @@ function arenaBroadcastFireMissile(x,y,angle){
   if(!arenaChannel) return;
   arenaChannel.send({type:'broadcast', event:'firemissile', payload:{id:arenaMyId, x, y, angle}});
 }
+function arenaBroadcastFireMine(x,y){
+  if(!arenaChannel) return;
+  arenaChannel.send({type:'broadcast', event:'firemine', payload:{id:arenaMyId, x, y}});
+}
 // Sent when OUR bullet/missile hits a remote player — see the module comment for why the
 // shooter decides this and the target applies it, rather than the other way round. `damage`
 // carries the shooter's actual weapon/missile damage level, so upgrades matter in PvP too —
@@ -1019,6 +1158,10 @@ function arenaHandleFire(msg){
 function arenaHandleFireMissile(msg){
   if(msg.id===arenaMyId) return;
   remoteMissiles.push(new RemoteMissile(msg.x, msg.y, msg.angle));
+}
+function arenaHandleFireMine(msg){
+  if(msg.id===arenaMyId) return;
+  remoteMines.push(new RemoteMine(msg.x, msg.y));
 }
 // A hit event only matters if WE are the named target — every other client just ignores it.
 // The VICTIM is the one who broadcasts the resulting kill (we're the ones who just found out
@@ -1086,6 +1229,8 @@ function updateArena(dt){
   for(const b of remoteBullets) b.update(dt);
   for(const m of arenaMissiles) m.update(dt);
   for(const m of remoteMissiles) m.update(dt);
+  for(const m of arenaMines) m.update(dt);
+  for(const m of remoteMines) m.update(dt);
   for(const p of particles) p.update(dt);
 
   // Our bullets vs every remote player currently alive — WE decide our own hits (see the
@@ -1114,10 +1259,25 @@ function updateArena(dt){
     if(hit || m.life<=0){ m.exploded=true; explodeArenaMissile(m); }
   }
 
+  // Our mines: only trigger once armed, then detonate the instant a living remote player comes
+  // within splash range — or silently time out at MINE_MAX_LIFE if nothing ever does.
+  for(const m of arenaMines){
+    if(m.exploded) continue;
+    let triggered = false;
+    if(m.armed){
+      for(const rp of remotePlayers.values()){
+        if(rp.alive && dist2(m,rp) < (m.splash+ARENA_SHIP_RADIUS)*(m.splash+ARENA_SHIP_RADIUS)){ triggered=true; break; }
+      }
+    }
+    if(triggered || m.life<=0){ m.exploded=true; explodeArenaMissile(m); } // same splash logic as a missile
+  }
+
   filterInPlace(arenaBullets, b=>b.life>0);
   filterInPlace(remoteBullets, b=>b.life>0);
   filterInPlace(arenaMissiles, m=>!m.exploded);
   filterInPlace(remoteMissiles, m=>m.life>0);
+  filterInPlace(arenaMines, m=>!m.exploded);
+  filterInPlace(remoteMines, m=>m.life>0);
   filterInPlace(particles, p=>p.life>0);
 
   updateArenaHUD();
@@ -1151,18 +1311,18 @@ function updateArenaHUD(){
     shieldRow.classList.add('hidden');
   }
 
-  const missileStats = arenaShip.stats.missile;
-  const missileRow = document.getElementById('arenaMissileStatus');
-  if(missileStats.count>0){
-    missileRow.classList.remove('hidden');
-    const ready = arenaShip.missileCooldown<=0;
-    missileRow.textContent = ready ? 'MISSILES READY' : `MISSILE ${Math.ceil(arenaShip.missileCooldown)}s`;
-    missileRow.classList.toggle('ready', ready);
+  const secondary = arenaShip.stats.secondary;
+  const secondaryRow = document.getElementById('arenaMissileStatus');
+  if(secondary){
+    secondaryRow.classList.remove('hidden');
+    const ready = arenaShip.secondaryCooldown<=0;
+    secondaryRow.textContent = ready ? `${secondary.name.toUpperCase()} READY` : `${secondary.name.toUpperCase()} ${Math.ceil(arenaShip.secondaryCooldown)}s`;
+    secondaryRow.classList.toggle('ready', ready);
   } else {
-    missileRow.classList.add('hidden');
+    secondaryRow.classList.add('hidden');
   }
-  document.getElementById('arenaHint').textContent = missileStats.count>0
-    ? 'W THRUST · A/D ROTATE · SPACE FIRE · SHIFT MISSILE · ESC EXIT ARENA'
+  document.getElementById('arenaHint').textContent = secondary
+    ? `W THRUST · A/D ROTATE · SPACE FIRE · SHIFT ${secondary.name.toUpperCase()} · ESC EXIT ARENA`
     : 'W THRUST · A/D ROTATE · SPACE FIRE · ESC EXIT ARENA';
 
   document.getElementById('arenaKillFeed').innerHTML = arenaKillFeed.map(l=>`<div>${l}</div>`).join('');
@@ -1204,7 +1364,7 @@ function drawRemotePlayer(rp){
 }
 
 let mission = null;
-const bullets=[], enemyBullets=[], missiles=[], asteroids=[], enemies=[], particles=[];
+const bullets=[], enemyBullets=[], missiles=[], mines=[], asteroids=[], enemies=[], particles=[];
 
 let shakeMag=0, shakeTime=0;
 function shake(mag){ shakeMag=mag; shakeTime=0.3; }
@@ -1238,7 +1398,7 @@ class Ship{
     this.radius=13;
     this.invulnTimer=1.6;
     this.fireCooldown=0;
-    this.missileCooldown=0;
+    this.secondaryCooldown=0;
     this.thrusting=false;
     this.alive=true;
     this.shieldFlash=0;
@@ -1248,15 +1408,15 @@ class Ship{
   }
   get stats(){
     return {
-      wpn: UPGRADE_TRACKS.weapon.levels[game.upgrades.weapon],
+      primary: WEAPONS[game.upgrades.equipped.primary],
+      secondary: game.upgrades.equipped.secondary ? WEAPONS[game.upgrades.equipped.secondary] : null,
       eng: UPGRADE_TRACKS.engine.levels[game.upgrades.engine],
       hull: UPGRADE_TRACKS.hull.levels[game.upgrades.hull],
       shield: UPGRADE_TRACKS.shield.levels[game.upgrades.shield],
-      missile: UPGRADE_TRACKS.missiles.levels[game.upgrades.missiles],
     };
   }
   update(dt){
-    const {wpn,eng,shield,missile} = this.stats;
+    const {primary,secondary,eng,shield} = this.stats;
     if(keys.has('KeyA')) this.angle -= eng.turnSpeed*dt;
     if(keys.has('KeyD')) this.angle += eng.turnSpeed*dt;
 
@@ -1285,25 +1445,21 @@ class Ship{
       }
     }
 
+    // findHomingTarget: nearest living asteroid or enemy — only actually consulted by a Missile
+    // if it was built with homing:true (Seeker Missile), see fireWeaponShots/Missile.update.
+    const findHomingTarget = ()=> findNearest(this, asteroids, enemies);
+
     this.fireCooldown -= dt;
     if(keys.has('Space') && this.fireCooldown<=0){
-      this.fireCooldown = wpn.cooldown;
-      const noseX = this.x + Math.sin(this.angle)*this.radius*1.4;
-      const noseY = this.y - Math.cos(this.angle)*this.radius*1.4;
-      bullets.push(new Bullet(noseX,noseY,this.angle,wpn.bulletSpeed,wpn.damage));
-      spawnParticles(noseX,noseY,'#4ff0ff',2,0.15,90);
+      this.fireCooldown = primary.cooldown;
+      fireWeaponShots(primary, this.x, this.y, this.angle, this.radius, bullets, missiles, mines, findHomingTarget);
+      spawnParticles(this.x + Math.sin(this.angle)*this.radius*1.4, this.y - Math.cos(this.angle)*this.radius*1.4, '#4ff0ff',2,0.15,90);
     }
 
-    this.missileCooldown -= dt;
-    if((keys.has('ShiftLeft')||keys.has('ShiftRight')) && missile.count>0 && this.missileCooldown<=0){
-      this.missileCooldown = missile.cooldown;
-      const offsets = missile.count>1 ? [-0.12,0.12] : [0];
-      for(const off of offsets){
-        const a = this.angle+off;
-        const noseX = this.x + Math.sin(a)*this.radius*1.4;
-        const noseY = this.y - Math.cos(a)*this.radius*1.4;
-        missiles.push(new Missile(noseX,noseY,a,missile.damage,missile.splash));
-      }
+    this.secondaryCooldown -= dt;
+    if((keys.has('ShiftLeft')||keys.has('ShiftRight')) && secondary && this.secondaryCooldown<=0){
+      this.secondaryCooldown = secondary.cooldown;
+      fireWeaponShots(secondary, this.x, this.y, this.angle, this.radius, bullets, missiles, mines, findHomingTarget);
       spawnParticles(this.x,this.y,'#ffb84d',8,0.25,140);
     }
   }
@@ -1326,6 +1482,51 @@ class Ship{
   }
 }
 
+/* ---------------------------- weapon firing dispatch ----------------------------
+   Fires `weaponDef` (a WEAPONS[...] entry) from (x,y) facing `angle`, spawning whatever kind of
+   projectile it actually is into the right array. This is the ONE place that has to know about
+   every weapon `type` — the campaign Ship and the PvP ArenaShip both call this instead of each
+   hardcoding "Space fires a Bullet, Shift fires a Missile" the way the old two-track system did.
+   That's what makes any weapon equippable to either slot: the slot doesn't decide what gets
+   fired, the equipped weapon's own `type` does.
+     bulletArr / missileArr / mineArr — the arrays to push spawned projectiles into (campaign
+       uses bullets/missiles/mines; the arena uses arenaBullets/arenaMissiles/arenaMines).
+     findHomingTarget — zero-arg function returning {x,y} of the best target for a homing
+       missile to steer toward (or a falsy value for "no target"). Passed in rather than looked
+       up here because the campaign homes in on asteroids/enemies while the arena homes in on
+       remote players — this function doesn't need to know which.
+   Returns the array of angles actually fired, in case a caller wants to spawn matching
+   particles/broadcasts per-shot. */
+function fireWeaponShots(weaponDef, x, y, angle, radius, bulletArr, missileArr, mineArr, findHomingTarget){
+  if(weaponDef.type==='mine'){
+    mineArr.push(new Mine(x, y, weaponDef.damage, weaponDef.splash, weaponDef.armTime));
+    return [angle];
+  }
+  const count = weaponDef.count || 1;
+  const angles = [];
+  if(count<=1){
+    angles.push(angle);
+  } else {
+    // Fan `count` shots evenly across weaponDef.spreadAngle (total arc, radians), centered on
+    // `angle` — e.g. count:5 spreadAngle:0.7 gives 5 bullets spanning a 40° cone.
+    const spread = weaponDef.spreadAngle || 0;
+    for(let i=0;i<count;i++){
+      const t = (i/(count-1)) - 0.5;
+      angles.push(angle + t*spread);
+    }
+  }
+  for(const a of angles){
+    const nx = x + Math.sin(a)*radius*1.4;
+    const ny = y - Math.cos(a)*radius*1.4;
+    if(weaponDef.type==='ballistic'){
+      bulletArr.push(new Bullet(nx, ny, a, weaponDef.bulletSpeed, weaponDef.damage));
+    } else if(weaponDef.type==='explosive'){
+      missileArr.push(new Missile(nx, ny, a, weaponDef.damage, weaponDef.splash, weaponDef.homing, findHomingTarget, weaponDef.turnRate));
+    }
+  }
+  return angles;
+}
+
 /* ---------------------------- bullets ---------------------------- */
 class Bullet{
   constructor(x,y,angle,speed,damage){
@@ -1342,17 +1543,80 @@ class Bullet{
 
 /* ---------------------------- missiles ---------------------------- */
 class Missile{
-  constructor(x,y,angle,damage,splash){
+  // `homing`/`findTarget`/`turnRate` are only used by the Seeker Missile — every other
+  // explosive weapon just leaves homing false and flies dead straight, same as before.
+  // `findTarget` is a zero-arg function (see fireWeaponShots above) so this class doesn't need
+  // to know whether it's chasing an asteroid, an enemy, or a remote player.
+  constructor(x,y,angle,damage,splash,homing=false,findTarget=null,turnRate=3.0){
     this.x=x; this.y=y; this.angle=angle;
     this.vx=Math.sin(angle)*360; this.vy=-Math.cos(angle)*360;
     this.damage=damage; this.splash=splash;
     this.radius=5; this.life=1.8; this.exploded=false;
+    this.speed=360;
+    this.homing=homing; this.findTarget=findTarget; this.turnRate=turnRate;
   }
   update(dt){
+    if(this.homing && this.findTarget){
+      const target = this.findTarget();
+      if(target){
+        const desiredAngle = Math.atan2(target.x-this.x, -(target.y-this.y));
+        // Shortest-path angle diff, clamped to how far this missile can turn in one frame — same
+        // pattern used for arena ghost-angle lerping elsewhere in this file.
+        let da = desiredAngle - this.angle;
+        da = ((da+Math.PI)%(Math.PI*2)+Math.PI*2)%(Math.PI*2) - Math.PI;
+        const maxTurn = this.turnRate*dt;
+        this.angle += Math.max(-maxTurn, Math.min(maxTurn, da));
+        this.vx = Math.sin(this.angle)*this.speed;
+        this.vy = -Math.cos(this.angle)*this.speed;
+      }
+    }
     this.x = wrap(this.x+this.vx*dt, canvas.width);
     this.y = wrap(this.y+this.vy*dt, canvas.height);
     this.life -= dt;
     if(Math.random()<0.6) spawnParticles(this.x,this.y,'#ffb84d',1,0.2,20);
+  }
+}
+
+// Finds the closest living entry across one or more arrays of {x,y}-having objects (asteroids,
+// enemies, remote players...), skipping any that are dead/not-alive. Shared by the campaign and
+// arena homing-target finders passed into fireWeaponShots — see Ship.update/ArenaShip.update.
+function findNearest(origin, ...lists){
+  let best=null, bestD=Infinity;
+  for(const list of lists){
+    for(const item of list){
+      if(item.dead || item.alive===false) continue;
+      const d = dist2(origin,item);
+      if(d<bestD){ bestD=d; best=item; }
+    }
+  }
+  return best;
+}
+
+/* ---------------------------- mines ---------------------------- */
+// Dropped in place behind the ship rather than fired forward — sits inert during `armTime`,
+// then is "live" and detonates the instant a hostile comes within its splash radius (checked in
+// the mission/arena update loops, not here — this class only tracks its own state machine).
+// Auto-despawns after MINE_MAX_LIFE seconds even if nothing ever triggers it, so a forgotten
+// mine doesn't sit on the field forever.
+const MINE_MAX_LIFE = 10;
+class Mine{
+  constructor(x,y,damage,splash,armTime){
+    this.x=x; this.y=y;
+    this.damage=damage; this.splash=splash;
+    this.armTimer=armTime;
+    this.armed=false;
+    this.life=MINE_MAX_LIFE;
+    this.radius=6;
+    this.exploded=false;
+    this.pulse=0; // cosmetic blink timer, see drawMine()
+  }
+  update(dt){
+    this.life -= dt;
+    if(!this.armed){
+      this.armTimer -= dt;
+      if(this.armTimer<=0) this.armed=true;
+    }
+    this.pulse += dt;
   }
 }
 function explodeMissile(m){
@@ -1542,7 +1806,7 @@ function objectiveLabel(m){
 
 function launchMission(id){
   const m = MISSIONS.find(mm=>mm.id===id);
-  bullets.length=0; enemyBullets.length=0; missiles.length=0; asteroids.length=0; enemies.length=0; particles.length=0;
+  bullets.length=0; enemyBullets.length=0; missiles.length=0; mines.length=0; asteroids.length=0; enemies.length=0; particles.length=0;
   ship.reset();
   const hullLvl = UPGRADE_TRACKS.hull.levels[game.upgrades.hull];
   mission = {
@@ -1626,6 +1890,7 @@ function updateMission(dt){
   for(const b of bullets) b.update(dt);
   for(const b of enemyBullets) b.update(dt);
   for(const m of missiles) m.update(dt);
+  for(const m of mines) m.update(dt);
   for(const a of asteroids) a.update(dt);
   for(const e of enemies) e.update(dt,ship);
   for(const p of particles) p.update(dt);
@@ -1717,10 +1982,22 @@ function updateMission(dt){
     if(!hit) for(const e of enemies){ if(!e.dead && dist2(m,e) < (m.radius+e.radius)*(m.radius+e.radius)){ hit=true; break; } }
     if(hit || m.life<=0){ m.exploded=true; explodeMissile(m); }
   }
+  // mines: only trigger once armed, then detonate the instant a hostile comes within splash
+  // range — or silently time out at MINE_MAX_LIFE if nothing ever does.
+  for(const m of mines){
+    if(m.exploded) continue;
+    let triggered = false;
+    if(m.armed){
+      for(const a of asteroids){ if(!a.dead && dist2(m,a) < (m.splash+a.radius)*(m.splash+a.radius)){ triggered=true; break; } }
+      if(!triggered) for(const e of enemies){ if(!e.dead && dist2(m,e) < (m.splash+e.radius)*(m.splash+e.radius)){ triggered=true; break; } }
+    }
+    if(triggered || m.life<=0){ m.exploded=true; explodeMissile(m); } // same splash logic as a missile
+  }
 
   filterInPlace(bullets, b=>b.life>0);
   filterInPlace(enemyBullets, b=>b.life>0);
   filterInPlace(missiles, m=>!m.exploded);
+  filterInPlace(mines, m=>!m.exploded);
   filterInPlace(asteroids, a=>!a.dead);
   filterInPlace(enemies, e=>!e.dead);
   filterInPlace(particles, p=>p.life>0);
@@ -1781,6 +2058,23 @@ function drawMissile(m){
   ctx.strokeStyle='#ffb84d'; ctx.shadowColor='#ffb84d'; ctx.shadowBlur=10; ctx.lineWidth=2;
   ctx.beginPath();
   ctx.moveTo(0,-9); ctx.lineTo(4,7); ctx.lineTo(0,4); ctx.lineTo(-4,7);
+  ctx.closePath(); ctx.stroke();
+  ctx.restore();
+}
+// Dim gray while arming, pulsing amber once live. `m.armed` is undefined on a cosmetic
+// RemoteMine (someone else's), which is treated the same as "already armed" here — we don't
+// know their real arm timer and it's not worth a network message just for this visual.
+function drawMine(m){
+  ctx.save();
+  ctx.translate(m.x,m.y);
+  const armed = m.armed!==false;
+  const pulse = armed ? 0.6+0.4*Math.sin((m.pulse||0)*8) : 1;
+  ctx.globalAlpha = armed ? pulse : 0.5;
+  ctx.strokeStyle = armed ? '#ffb84d' : '#8a93a8';
+  ctx.shadowColor = armed ? '#ffb84d' : '#8a93a8'; ctx.shadowBlur = armed?10:4;
+  ctx.lineWidth=2;
+  ctx.beginPath();
+  ctx.moveTo(0,-7); ctx.lineTo(7,0); ctx.lineTo(0,7); ctx.lineTo(-7,0);
   ctx.closePath(); ctx.stroke();
   ctx.restore();
 }
@@ -1848,6 +2142,7 @@ function render(dt){
     for(const b of bullets) drawBullet(b,'#4ff0ff');
     for(const b of enemyBullets) drawBullet(b,'#ff3d81');
     for(const m of missiles) drawMissile(m);
+    for(const m of mines) drawMine(m);
     for(const p of particles) drawParticle(p);
     if(ship.alive) drawShip(ship);
     ctx.restore();
@@ -1863,6 +2158,8 @@ function render(dt){
     for(const b of remoteBullets) drawBullet(b,'#ff3d81');
     for(const m of arenaMissiles) drawMissile(m);
     for(const m of remoteMissiles) drawMissile(m);
+    for(const m of arenaMines) drawMine(m);
+    for(const m of remoteMines) drawMine(m);
     for(const p of particles) drawParticle(p);
     for(const rp of remotePlayers.values()) if(rp.alive) drawRemotePlayer(rp);
     if(arenaShip.alive) drawShip(arenaShip);
@@ -1889,18 +2186,18 @@ function updateHUD(){
     shieldRow.classList.add('hidden');
   }
 
-  const missileLvl = UPGRADE_TRACKS.missiles.levels[game.upgrades.missiles];
-  const missileRow = document.getElementById('hudMissile');
-  if(missileLvl.count>0){
-    missileRow.classList.remove('hidden');
-    const ready = ship.missileCooldown<=0;
-    missileRow.textContent = ready ? 'MISSILES READY' : `MISSILE ${Math.ceil(ship.missileCooldown)}s`;
-    missileRow.classList.toggle('ready', ready);
+  const secondary = game.upgrades.equipped.secondary ? WEAPONS[game.upgrades.equipped.secondary] : null;
+  const secondaryRow = document.getElementById('hudMissile');
+  if(secondary){
+    secondaryRow.classList.remove('hidden');
+    const ready = ship.secondaryCooldown<=0;
+    secondaryRow.textContent = ready ? `${secondary.name.toUpperCase()} READY` : `${secondary.name.toUpperCase()} ${Math.ceil(ship.secondaryCooldown)}s`;
+    secondaryRow.classList.toggle('ready', ready);
   } else {
-    missileRow.classList.add('hidden');
+    secondaryRow.classList.add('hidden');
   }
-  document.getElementById('hudHint').textContent = missileLvl.count>0
-    ? 'W THRUST · A/D ROTATE · SPACE FIRE · SHIFT MISSILE · ESC ABORT'
+  document.getElementById('hudHint').textContent = secondary
+    ? `W THRUST · A/D ROTATE · SPACE FIRE · SHIFT ${secondary.name.toUpperCase()} · ESC ABORT`
     : 'W THRUST · A/D ROTATE · SPACE FIRE · ESC ABORT';
 
   const timerEl = document.getElementById('hudTimer');
@@ -1983,6 +2280,64 @@ function renderMissionDetail(){
 }
 
 function renderUpgrades(){
+  renderLoadout();
+  renderWeaponShop();
+  renderSystemUpgrades();
+}
+
+// Two slot pickers (Primary/Space, Secondary/Shift) showing every OWNED weapon as a clickable
+// chip; the chip matching what's currently equipped in that slot is highlighted. Secondary can
+// be cleared to "— None —"; primary always has to hold something since the ship needs a Space
+// weapon to be playable.
+function renderLoadout(){
+  const owned = game.upgrades.ownedWeapons;
+  const buildSlot = (slot, label, allowEmpty)=>{
+    const equippedId = game.upgrades.equipped[slot];
+    const chips = owned.map(id=>{
+      const active = id===equippedId;
+      return `<button class="loadout-chip ${active?'active':''}" data-slot="${slot}" data-weapon="${id}">${WEAPONS[id].name}</button>`;
+    }).join('');
+    const emptyChip = allowEmpty
+      ? `<button class="loadout-chip ${equippedId?'':'active'}" data-slot="${slot}" data-weapon="">— None —</button>`
+      : '';
+    return `<div class="loadout-slot">
+      <div class="loadout-slot-label">${label}</div>
+      <div class="loadout-chip-row">${chips}${emptyChip}</div>
+    </div>`;
+  };
+  const row = document.getElementById('loadoutRow');
+  row.innerHTML = buildSlot('primary', 'PRIMARY · SPACE', false) + buildSlot('secondary', 'SECONDARY · SHIFT', true);
+  row.querySelectorAll('.loadout-chip').forEach(btn=>{
+    btn.addEventListener('click', ()=> equipWeapon(btn.dataset.slot, btn.dataset.weapon || null));
+  });
+}
+
+// One-time-purchase catalog — every entry in WEAPONS shows either a Buy button (cost, or
+// disabled if you can't afford it) or an OWNED tag once purchased. Buying doesn't auto-equip;
+// use the Loadout chips above to actually assign it to a slot.
+function renderWeaponShop(){
+  const grid = document.getElementById('weaponShopGrid');
+  grid.innerHTML = Object.keys(WEAPONS).map(id=>{
+    const w = WEAPONS[id];
+    const owned = game.upgrades.ownedWeapons.includes(id);
+    return `<div class="upgrade-card weapon-card ${owned?'owned':''}">
+      <div class="upgrade-name">${w.name}</div>
+      <div class="upgrade-stat">${w.desc}</div>
+      ${owned
+        ? `<div class="upgrade-next">OWNED</div>`
+        : `<div class="upgrade-next">Cost: <span class="upgrade-cost">${w.cost} CR</span></div>
+           <button class="btn btn-small" data-weapon="${id}" ${game.credits<w.cost?'disabled':''}>Buy</button>`
+      }
+    </div>`;
+  }).join('');
+  grid.querySelectorAll('button[data-weapon]').forEach(btn=>{
+    btn.addEventListener('click', ()=> buyWeapon(btn.dataset.weapon));
+  });
+}
+
+// The old leveled-track grid, unchanged in behavior — just renamed and now only ever iterates
+// engine/hull/shield since weapon/missiles were pulled out of UPGRADE_TRACKS entirely.
+function renderSystemUpgrades(){
   const grid = document.getElementById('upgradeGrid');
   grid.innerHTML = Object.keys(UPGRADE_TRACKS).map(key=>{
     const track = UPGRADE_TRACKS[key];
@@ -2019,6 +2374,35 @@ function buyUpgrade(track){
   renderHangar();
 }
 
+function buyWeapon(id){
+  const w = WEAPONS[id];
+  if(!w || game.upgrades.ownedWeapons.includes(id) || game.credits<w.cost) return;
+  game.credits -= w.cost;
+  game.upgrades.ownedWeapons.push(id);
+  saveProgress();
+  renderHangar();
+}
+
+// Equips `weaponId` (or null) to the given slot. Primary can never be cleared to null — the
+// ship always needs something bound to Space. If the weapon being equipped is already sitting
+// in the OTHER slot, it's moved (swapped) rather than duplicated into both slots at once; if
+// that swap would leave primary empty (e.g. equipping your only other weapon, currently primary,
+// into secondary while secondary is empty) the request is silently ignored rather than leaving
+// the ship without a primary weapon.
+function equipWeapon(slot, weaponId){
+  if(slot==='primary' && !weaponId) return;
+  if(weaponId && !game.upgrades.ownedWeapons.includes(weaponId)) return;
+  const otherSlot = slot==='primary' ? 'secondary' : 'primary';
+  if(weaponId && game.upgrades.equipped[otherSlot]===weaponId){
+    const displaced = game.upgrades.equipped[slot];
+    if(otherSlot==='primary' && !displaced) return; // would leave primary empty — refuse
+    game.upgrades.equipped[otherSlot] = displaced;
+  }
+  game.upgrades.equipped[slot] = weaponId;
+  saveProgress();
+  renderHangar();
+}
+
 function drawBlueprint(){
   const c = document.getElementById('blueprintCanvas');
   const bctx = c.getContext('2d');
@@ -2030,7 +2414,7 @@ function drawBlueprint(){
   for(let gy=0; gy<h; gy+=20){ bctx.beginPath(); bctx.moveTo(0,gy); bctx.lineTo(w,gy); bctx.stroke(); }
 
   const cx=w/2, cy=h/2+6;
-  const hullLvl=game.upgrades.hull, engLvl=game.upgrades.engine, wpnLvl=game.upgrades.weapon;
+  const hullLvl=game.upgrades.hull, engLvl=game.upgrades.engine;
 
   const engR = 16+engLvl*7;
   const grad = bctx.createRadialGradient(cx,cy+46,2,cx,cy+46,engR);
@@ -2060,8 +2444,12 @@ function drawBlueprint(){
   }
 
   const wingSpots=[[cx-34,cy+42],[cx+34,cy+42],[cx-14,cy+30],[cx+14,cy+30]];
+  // No more single 'weapon level' to light these up by — instead they fill in as the player
+  // buys more weapons from the shop, same visual idea (a fuller-looking arsenal) with a shape
+  // that fits the shop model.
+  const ownedCount = Math.min(game.upgrades.ownedWeapons.length, wingSpots.length);
   for(let i=0;i<wingSpots.length;i++){
-    const lit = i<=wpnLvl;
+    const lit = i<ownedCount;
     bctx.fillStyle = lit?'#ff3d81':'rgba(255,61,129,0.15)';
     bctx.shadowColor='#ff3d81'; bctx.shadowBlur = lit?8:0;
     bctx.beginPath(); bctx.arc(wingSpots[i][0],wingSpots[i][1],4,0,Math.PI*2); bctx.fill();
@@ -2080,9 +2468,12 @@ function drawBlueprint(){
     bctx.restore();
   }
 
-  const missileTrack = UPGRADE_TRACKS.missiles.levels[game.upgrades.missiles];
-  if(missileTrack.count>0){
-    const podSpots = missileTrack.count>1 ? [[cx-22,cy+16],[cx+22,cy+16]] : [[cx,cy+20]];
+  // Rear pod visual now reflects whatever's actually equipped to the secondary slot, rather
+  // than a fixed missile track — doubled up if that weapon fires more than one projectile.
+  const secondaryId = game.upgrades.equipped.secondary;
+  if(secondaryId){
+    const secondaryW = WEAPONS[secondaryId];
+    const podSpots = secondaryW.count>1 ? [[cx-22,cy+16],[cx+22,cy+16]] : [[cx,cy+20]];
     bctx.fillStyle='#ffb84d'; bctx.shadowColor='#ffb84d'; bctx.shadowBlur=8;
     podSpots.forEach(([px,py])=>{ bctx.fillRect(px-4,py-3,8,6); });
     bctx.shadowBlur=0;
