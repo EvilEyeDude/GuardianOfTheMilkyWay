@@ -202,6 +202,14 @@
   .upgrade-next{font-size:12px;color:var(--text-faint);}
   .upgrade-cost{color:var(--amber);}
   .weapon-card.owned{border-color:rgba(79,240,255,0.35);}
+  /* Small round swatch showing a weapon's WEAPONS[...].color — set inline via style="--dot:...",
+     used by both the shop cards (.upgrade-name) and the loadout chips below, so the in-flight
+     bolt/missile/mine color is recognizable before you ever equip it. */
+  .weapon-dot{
+    display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px;
+    background:var(--dot,var(--cyan));box-shadow:0 0 5px var(--dot,var(--cyan));
+    vertical-align:middle;position:relative;top:-1px;
+  }
 
   /* ---------- weapon loadout (primary/secondary slot picker) ---------- */
   .loadout-row{display:flex;gap:16px;flex-wrap:wrap;}
@@ -528,69 +536,74 @@ const UPGRADE_TRACKS = {
    To add a new weapon: add an entry here. No other code needs to change UNLESS you're
    introducing a genuinely new `type` (a future beam weapon, for example, needs its own
    continuous-fire/line-collision logic — deliberately not attempted here, see project notes). */
+// `color` is the ONE source of truth for a weapon's visual identity — it drives the bolt/
+// missile/mine sprite, its glow, muzzle-flash particles, and the shop/loadout UI swatches, all
+// read straight from here (see fireWeaponShots, drawBullet/drawMissile/drawMine call sites, and
+// renderLoadout/renderWeaponShop below). Change a hex here and every one of those updates
+// automatically — no other place in the file hardcodes a per-weapon color.
 const WEAPONS = {
   pulse_cannon:{
-    name:'Pulse Cannon', type:'ballistic', cost:0,
+    name:'Pulse Cannon', type:'ballistic', cost:0, color:'#4ff0ff',
     cooldown:0.38, bulletSpeed:520, damage:1, count:1,
     desc:'Fire rate 2.6/s · Damage 1 — reliable starter sidearm.',
   },
   rapid_autocannon:{
-    name:'Rapid Autocannon', type:'ballistic', cost:250,
+    name:'Rapid Autocannon', type:'ballistic', cost:250, color:'#4dff9f',
     cooldown:0.16, bulletSpeed:700, damage:1, count:1,
     desc:'Fire rate 6.3/s · Damage 1 — high rate of fire, good vs swarms.',
   },
   twin_blaster:{
-    name:'Twin Blaster', type:'ballistic', cost:320,
+    name:'Twin Blaster', type:'ballistic', cost:320, color:'#4d94ff',
     cooldown:0.30, bulletSpeed:560, damage:1, count:2, spreadAngle:0.10,
     desc:'Fire rate 3.3/s · Damage 1×2 — fires a tight pair of bolts per shot.',
   },
   scatter_cannon:{
-    name:'Scatter Cannon', type:'ballistic', cost:340,
+    name:'Scatter Cannon', type:'ballistic', cost:340, color:'#c9ff4d',
     cooldown:1.0, bulletSpeed:520, damage:1, count:5, spreadAngle:0.70,
     desc:'Fire rate 1/s · Damage 1×5 — wide 40° fan, devastating up close.',
   },
   plasma_lance:{
-    name:'Plasma Lance', type:'ballistic', cost:500,
+    name:'Plasma Lance', type:'ballistic', cost:500, color:'#c04dff',
     cooldown:0.50, bulletSpeed:700, damage:3, count:1,
     desc:'Fire rate 2.0/s · Damage 3 — slower, hits hard, fast bolt.',
   },
   railgun:{
-    name:'Railgun', type:'ballistic', cost:650,
+    name:'Railgun', type:'ballistic', cost:650, color:'#ffffff',
     cooldown:0.65, bulletSpeed:950, damage:5, count:1,
     desc:'Fire rate 1.5/s · Damage 5 — heaviest single-hit ballistic weapon.',
   },
   missile_rack:{
-    name:'Missile Rack', type:'explosive', cost:200,
+    name:'Missile Rack', type:'explosive', cost:200, color:'#ffb84d',
     cooldown:3.0, damage:4, splash:42, count:1,
     desc:'1× rack · 4 dmg · 42px splash — your basic missile launcher.',
   },
   twin_missile_rack:{
-    name:'Twin Missile Rack', type:'explosive', cost:400,
+    name:'Twin Missile Rack', type:'explosive', cost:400, color:'#ff8040',
     cooldown:2.2, damage:5, splash:56, count:2, spreadAngle:0.24,
     desc:'2× rack · 5 dmg · 56px splash — fires a pair per volley.',
   },
   seeker_missile:{
-    name:'Seeker Missile', type:'explosive', cost:450,
+    name:'Seeker Missile', type:'explosive', cost:450, color:'#ff4da6',
     cooldown:3.2, damage:4, splash:40, count:1, homing:true, turnRate:3.2,
     desc:'1× rack · 4 dmg · 40px splash · homes in on the nearest target.',
   },
   proximity_mine:{
-    name:'Proximity Mine', type:'mine', cost:380,
+    name:'Proximity Mine', type:'mine', cost:380, color:'#fff44d',
     cooldown:1.8, damage:5, splash:60, armTime:0.8,
     desc:'5 dmg · 60px splash — drops behind you, arms in 0.8s, triggers on proximity.',
   },
   cluster_rocket:{
-    name:'Cluster Rocket', type:'explosive', cost:480,
+    name:'Cluster Rocket', type:'explosive', cost:480, color:'#ff5b3d',
     cooldown:3.5, damage:3, splash:90, count:3, spreadAngle:0.36,
     desc:'3× rack · 3 dmg · 90px splash — wide spread, biggest blast radius.',
   },
   torpedo:{
-    name:'Torpedo', type:'explosive', cost:650,
+    name:'Torpedo', type:'explosive', cost:650, color:'#ff3d3d',
     cooldown:4.5, damage:12, splash:60, count:1,
     desc:'1× rack · 12 dmg · 60px splash — slow reload, boss-killer payload.',
   },
   neutron_blast:{
-    name:'Neutron Blast', type:'explosive', cost:10000,
+    name:'Neutron Blast', type:'explosive', cost:10000, color:'#7fffd4',
     cooldown:6.5, damage:3, splash:10, count:15, spreadAngle:4.71,
     desc:'15× rack · 3 dmg · 10px splash — fire a 270 degree spread blast of 15 tiny missiles.',
   },
@@ -923,23 +936,24 @@ class ArenaShip{
     if(keys.has('Space') && this.fireCooldown<=0){
       this.fireCooldown = s.primary.cooldown;
       const angles = fireWeaponShots(s.primary, this.x, this.y, this.angle, this.radius, arenaBullets, arenaMissiles, arenaMines, findHomingTarget);
-      spawnParticles(this.x + Math.sin(this.angle)*this.radius*1.4, this.y - Math.cos(this.angle)*this.radius*1.4, '#4ff0ff',2,0.15,90);
+      spawnParticles(this.x + Math.sin(this.angle)*this.radius*1.4, this.y - Math.cos(this.angle)*this.radius*1.4, s.primary.color,2,0.15,90);
       // Cosmetic broadcast only covers the primary shot's origin/angle — other players see one
       // representative bolt/missile per volley rather than every fanned shot, which is a fine
       // trade for how rarely multi-shot weapons matter cosmetically vs. the extra network chatter.
-      if(s.primary.type==='ballistic') arenaBroadcastFire(this.x,this.y,angles[0]);
-      else if(s.primary.type==='explosive') arenaBroadcastFireMissile(this.x,this.y,angles[0]);
-      else if(s.primary.type==='mine') arenaBroadcastFireMine(this.x,this.y);
+      // `s.primary.color` rides along so remote viewers render it in the right weapon's color.
+      if(s.primary.type==='ballistic') arenaBroadcastFire(this.x,this.y,angles[0],s.primary.color);
+      else if(s.primary.type==='explosive') arenaBroadcastFireMissile(this.x,this.y,angles[0],s.primary.color);
+      else if(s.primary.type==='mine') arenaBroadcastFireMine(this.x,this.y,s.primary.color);
     }
 
     this.secondaryCooldown -= dt;
     if((keys.has('ShiftLeft')||keys.has('ShiftRight')) && s.secondary && this.secondaryCooldown<=0){
       this.secondaryCooldown = s.secondary.cooldown;
       const angles = fireWeaponShots(s.secondary, this.x, this.y, this.angle, this.radius, arenaBullets, arenaMissiles, arenaMines, findHomingTarget);
-      spawnParticles(this.x,this.y,'#ffb84d',8,0.25,140);
-      if(s.secondary.type==='ballistic') arenaBroadcastFire(this.x,this.y,angles[0]);
-      else if(s.secondary.type==='explosive') arenaBroadcastFireMissile(this.x,this.y,angles[0]);
-      else if(s.secondary.type==='mine') arenaBroadcastFireMine(this.x,this.y);
+      spawnParticles(this.x,this.y,s.secondary.color,8,0.25,140);
+      if(s.secondary.type==='ballistic') arenaBroadcastFire(this.x,this.y,angles[0],s.secondary.color);
+      else if(s.secondary.type==='explosive') arenaBroadcastFireMissile(this.x,this.y,angles[0],s.secondary.color);
+      else if(s.secondary.type==='mine') arenaBroadcastFireMine(this.x,this.y,s.secondary.color);
     }
   }
   // Called when a broadcast 'hit' event names US as the target, with the amount of damage that
@@ -1001,10 +1015,13 @@ class RemotePlayer{
 // (only the shooter's own arenaBullets do that). Without this, remote ships would look like
 // they're never firing even while actively shooting at you.
 class RemoteBullet{
-  constructor(x,y,angle){
+  // `color` rides along in the 'fire' broadcast payload (see arenaBroadcastFire/arenaHandleFire)
+  // so a remote player's shots show their actual equipped weapon's color, not a generic one.
+  // Defaults to the old magenta in case a payload ever arrives without it.
+  constructor(x,y,angle,color='#ff3d81'){
     this.x=x; this.y=y;
     this.vx=Math.sin(angle)*ARENA_STATS.bulletSpeed; this.vy=-Math.cos(angle)*ARENA_STATS.bulletSpeed;
-    this.radius=3; this.life=1.4;
+    this.radius=3; this.life=1.4; this.color=color;
   }
   update(dt){
     this.x=wrap(this.x+this.vx*dt,canvas.width);
@@ -1014,19 +1031,20 @@ class RemoteBullet{
 }
 
 // Same idea as RemoteBullet but for missiles — cosmetic only, drawn with the existing
-// drawMissile() (which only ever reads .x/.y/.angle, so no changes needed there). The speed
-// constant matches the campaign Missile class's own hardcoded speed, purely for visual match.
+// drawMissile() (which reads .x/.y/.angle/.color, all provided below). The speed constant
+// matches the campaign Missile class's own hardcoded speed, purely for visual match.
 class RemoteMissile{
-  constructor(x,y,angle){
+  // Same color-over-the-wire idea as RemoteBullet above.
+  constructor(x,y,angle,color='#ffb84d'){
     this.x=x; this.y=y; this.angle=angle;
     this.vx=Math.sin(angle)*360; this.vy=-Math.cos(angle)*360;
-    this.life=1.8;
+    this.life=1.8; this.color=color;
   }
   update(dt){
     this.x=wrap(this.x+this.vx*dt,canvas.width);
     this.y=wrap(this.y+this.vy*dt,canvas.height);
     this.life-=dt;
-    if(Math.random()<0.6) spawnParticles(this.x,this.y,'#ffb84d',1,0.2,20);
+    if(Math.random()<0.6) spawnParticles(this.x,this.y,this.color,1,0.2,20);
   }
 }
 
@@ -1037,9 +1055,11 @@ class RemoteMissile{
 // REMOTE_MINE_LIFE seconds rather than tracking real arm/trigger state.
 const REMOTE_MINE_LIFE = 4;
 class RemoteMine{
-  constructor(x,y){
+  // Same color-over-the-wire idea as RemoteBullet above. drawMine() treats a RemoteMine as
+  // permanently "armed" (see its own comment), so this color is what actually shows on screen.
+  constructor(x,y,color='#ffb84d'){
     this.x=x; this.y=y;
-    this.life=REMOTE_MINE_LIFE;
+    this.life=REMOTE_MINE_LIFE; this.color=color;
   }
   update(dt){ this.life -= dt; }
 }
@@ -1118,17 +1138,19 @@ function arenaBroadcastState(){
     shield:arenaShip.shield, shieldMax:arenaShip.shieldMax,
   }});
 }
-function arenaBroadcastFire(x,y,angle){
+// `color` is the firing weapon's WEAPONS[...].color, so remote viewers see the shooter's actual
+// equipped weapon rather than one fixed color per projectile type.
+function arenaBroadcastFire(x,y,angle,color){
   if(!arenaChannel) return;
-  arenaChannel.send({type:'broadcast', event:'fire', payload:{id:arenaMyId, x, y, angle}});
+  arenaChannel.send({type:'broadcast', event:'fire', payload:{id:arenaMyId, x, y, angle, color}});
 }
-function arenaBroadcastFireMissile(x,y,angle){
+function arenaBroadcastFireMissile(x,y,angle,color){
   if(!arenaChannel) return;
-  arenaChannel.send({type:'broadcast', event:'firemissile', payload:{id:arenaMyId, x, y, angle}});
+  arenaChannel.send({type:'broadcast', event:'firemissile', payload:{id:arenaMyId, x, y, angle, color}});
 }
-function arenaBroadcastFireMine(x,y){
+function arenaBroadcastFireMine(x,y,color){
   if(!arenaChannel) return;
-  arenaChannel.send({type:'broadcast', event:'firemine', payload:{id:arenaMyId, x, y}});
+  arenaChannel.send({type:'broadcast', event:'firemine', payload:{id:arenaMyId, x, y, color}});
 }
 // Sent when OUR bullet/missile hits a remote player — see the module comment for why the
 // shooter decides this and the target applies it, rather than the other way round. `damage`
@@ -1153,15 +1175,15 @@ function arenaHandleState(msg){
 }
 function arenaHandleFire(msg){
   if(msg.id===arenaMyId) return;
-  remoteBullets.push(new RemoteBullet(msg.x, msg.y, msg.angle));
+  remoteBullets.push(new RemoteBullet(msg.x, msg.y, msg.angle, msg.color));
 }
 function arenaHandleFireMissile(msg){
   if(msg.id===arenaMyId) return;
-  remoteMissiles.push(new RemoteMissile(msg.x, msg.y, msg.angle));
+  remoteMissiles.push(new RemoteMissile(msg.x, msg.y, msg.angle, msg.color));
 }
 function arenaHandleFireMine(msg){
   if(msg.id===arenaMyId) return;
-  remoteMines.push(new RemoteMine(msg.x, msg.y));
+  remoteMines.push(new RemoteMine(msg.x, msg.y, msg.color));
 }
 // A hit event only matters if WE are the named target — every other client just ignores it.
 // The VICTIM is the one who broadcasts the resulting kill (we're the ones who just found out
@@ -1287,7 +1309,7 @@ function updateArena(dt){
 // explodeMissile() — each one gets its own 'hit' broadcast (with the missile's damage) rather
 // than a single event, since different targets may have different shields/health.
 function explodeArenaMissile(m){
-  spawnParticles(m.x,m.y,'#ffb84d',24,0.6,220);
+  spawnParticles(m.x,m.y,m.color,24,0.6,220);
   shake(8);
   for(const rp of remotePlayers.values()){
     if(!rp.alive) continue;
@@ -1453,14 +1475,14 @@ class Ship{
     if(keys.has('Space') && this.fireCooldown<=0){
       this.fireCooldown = primary.cooldown;
       fireWeaponShots(primary, this.x, this.y, this.angle, this.radius, bullets, missiles, mines, findHomingTarget);
-      spawnParticles(this.x + Math.sin(this.angle)*this.radius*1.4, this.y - Math.cos(this.angle)*this.radius*1.4, '#4ff0ff',2,0.15,90);
+      spawnParticles(this.x + Math.sin(this.angle)*this.radius*1.4, this.y - Math.cos(this.angle)*this.radius*1.4, primary.color,2,0.15,90);
     }
 
     this.secondaryCooldown -= dt;
     if((keys.has('ShiftLeft')||keys.has('ShiftRight')) && secondary && this.secondaryCooldown<=0){
       this.secondaryCooldown = secondary.cooldown;
       fireWeaponShots(secondary, this.x, this.y, this.angle, this.radius, bullets, missiles, mines, findHomingTarget);
-      spawnParticles(this.x,this.y,'#ffb84d',8,0.25,140);
+      spawnParticles(this.x,this.y,secondary.color,8,0.25,140);
     }
   }
   hit(){
@@ -1499,7 +1521,7 @@ class Ship{
    particles/broadcasts per-shot. */
 function fireWeaponShots(weaponDef, x, y, angle, radius, bulletArr, missileArr, mineArr, findHomingTarget){
   if(weaponDef.type==='mine'){
-    mineArr.push(new Mine(x, y, weaponDef.damage, weaponDef.splash, weaponDef.armTime));
+    mineArr.push(new Mine(x, y, weaponDef.damage, weaponDef.splash, weaponDef.armTime, weaponDef.color));
     return [angle];
   }
   const count = weaponDef.count || 1;
@@ -1519,9 +1541,9 @@ function fireWeaponShots(weaponDef, x, y, angle, radius, bulletArr, missileArr, 
     const nx = x + Math.sin(a)*radius*1.4;
     const ny = y - Math.cos(a)*radius*1.4;
     if(weaponDef.type==='ballistic'){
-      bulletArr.push(new Bullet(nx, ny, a, weaponDef.bulletSpeed, weaponDef.damage));
+      bulletArr.push(new Bullet(nx, ny, a, weaponDef.bulletSpeed, weaponDef.damage, weaponDef.color));
     } else if(weaponDef.type==='explosive'){
-      missileArr.push(new Missile(nx, ny, a, weaponDef.damage, weaponDef.splash, weaponDef.homing, findHomingTarget, weaponDef.turnRate));
+      missileArr.push(new Missile(nx, ny, a, weaponDef.damage, weaponDef.splash, weaponDef.homing, findHomingTarget, weaponDef.turnRate, weaponDef.color));
     }
   }
   return angles;
@@ -1529,10 +1551,13 @@ function fireWeaponShots(weaponDef, x, y, angle, radius, bulletArr, missileArr, 
 
 /* ---------------------------- bullets ---------------------------- */
 class Bullet{
-  constructor(x,y,angle,speed,damage){
+  // `color` defaults to the classic cyan so anything that still constructs a Bullet without
+  // passing one (currently: enemy fire, which is drawn with its own hardcoded color regardless —
+  // see drawBullet call sites) keeps working unchanged.
+  constructor(x,y,angle,speed,damage,color='#4ff0ff'){
     this.x=x; this.y=y;
     this.vx=Math.sin(angle)*speed; this.vy=-Math.cos(angle)*speed;
-    this.damage=damage; this.radius=3; this.life=1.4;
+    this.damage=damage; this.radius=3; this.life=1.4; this.color=color;
   }
   update(dt){
     this.x = wrap(this.x+this.vx*dt, canvas.width);
@@ -1547,13 +1572,14 @@ class Missile{
   // explosive weapon just leaves homing false and flies dead straight, same as before.
   // `findTarget` is a zero-arg function (see fireWeaponShots above) so this class doesn't need
   // to know whether it's chasing an asteroid, an enemy, or a remote player.
-  constructor(x,y,angle,damage,splash,homing=false,findTarget=null,turnRate=3.0){
+  constructor(x,y,angle,damage,splash,homing=false,findTarget=null,turnRate=3.0,color='#ffb84d'){
     this.x=x; this.y=y; this.angle=angle;
     this.vx=Math.sin(angle)*360; this.vy=-Math.cos(angle)*360;
     this.damage=damage; this.splash=splash;
     this.radius=5; this.life=1.8; this.exploded=false;
     this.speed=360;
     this.homing=homing; this.findTarget=findTarget; this.turnRate=turnRate;
+    this.color=color;
   }
   update(dt){
     if(this.homing && this.findTarget){
@@ -1573,7 +1599,7 @@ class Missile{
     this.x = wrap(this.x+this.vx*dt, canvas.width);
     this.y = wrap(this.y+this.vy*dt, canvas.height);
     this.life -= dt;
-    if(Math.random()<0.6) spawnParticles(this.x,this.y,'#ffb84d',1,0.2,20);
+    if(Math.random()<0.6) spawnParticles(this.x,this.y,this.color,1,0.2,20);
   }
 }
 
@@ -1600,7 +1626,7 @@ function findNearest(origin, ...lists){
 // mine doesn't sit on the field forever.
 const MINE_MAX_LIFE = 10;
 class Mine{
-  constructor(x,y,damage,splash,armTime){
+  constructor(x,y,damage,splash,armTime,color='#ffb84d'){
     this.x=x; this.y=y;
     this.damage=damage; this.splash=splash;
     this.armTimer=armTime;
@@ -1609,6 +1635,7 @@ class Mine{
     this.radius=6;
     this.exploded=false;
     this.pulse=0; // cosmetic blink timer, see drawMine()
+    this.color=color; // only shown once armed — drawMine() keeps the dim gray "arming" look regardless
   }
   update(dt){
     this.life -= dt;
@@ -1619,8 +1646,10 @@ class Mine{
     this.pulse += dt;
   }
 }
+// Shared by both real Missiles and triggered Mines (see the mine-trigger block below) — both
+// carry a `.color` from their firing weapon, so the blast always matches whatever went off.
 function explodeMissile(m){
-  spawnParticles(m.x,m.y,'#ffb84d',24,0.6,220);
+  spawnParticles(m.x,m.y,m.color,24,0.6,220);
   shake(8);
   // snapshot: splash should only catch what existed at the moment of impact,
   // not chunks that this same explosion spawns while it's iterating
@@ -2052,26 +2081,30 @@ function drawShip(s){
     ctx.restore();
   }
 }
+// Color comes from the missile itself (set from the firing weapon's WEAPONS[...].color — see
+// fireWeaponShots/Missile/RemoteMissile) so every explosive weapon reads its own hue here with
+// zero per-weapon branching; `m.color` always has a value thanks to each constructor's default.
 function drawMissile(m){
   ctx.save();
   ctx.translate(m.x,m.y); ctx.rotate(m.angle);
-  ctx.strokeStyle='#ffb84d'; ctx.shadowColor='#ffb84d'; ctx.shadowBlur=10; ctx.lineWidth=2;
+  ctx.strokeStyle=m.color; ctx.shadowColor=m.color; ctx.shadowBlur=10; ctx.lineWidth=2;
   ctx.beginPath();
   ctx.moveTo(0,-9); ctx.lineTo(4,7); ctx.lineTo(0,4); ctx.lineTo(-4,7);
   ctx.closePath(); ctx.stroke();
   ctx.restore();
 }
-// Dim gray while arming, pulsing amber once live. `m.armed` is undefined on a cosmetic
-// RemoteMine (someone else's), which is treated the same as "already armed" here — we don't
-// know their real arm timer and it's not worth a network message just for this visual.
+// Dim gray while arming, pulsing in the mine's own weapon color once live. `m.armed` is
+// undefined on a cosmetic RemoteMine (someone else's), which is treated the same as "already
+// armed" here — we don't know their real arm timer and it's not worth a network message just
+// for this visual.
 function drawMine(m){
   ctx.save();
   ctx.translate(m.x,m.y);
   const armed = m.armed!==false;
   const pulse = armed ? 0.6+0.4*Math.sin((m.pulse||0)*8) : 1;
   ctx.globalAlpha = armed ? pulse : 0.5;
-  ctx.strokeStyle = armed ? '#ffb84d' : '#8a93a8';
-  ctx.shadowColor = armed ? '#ffb84d' : '#8a93a8'; ctx.shadowBlur = armed?10:4;
+  ctx.strokeStyle = armed ? m.color : '#8a93a8';
+  ctx.shadowColor = armed ? m.color : '#8a93a8'; ctx.shadowBlur = armed?10:4;
   ctx.lineWidth=2;
   ctx.beginPath();
   ctx.moveTo(0,-7); ctx.lineTo(7,0); ctx.lineTo(0,7); ctx.lineTo(-7,0);
@@ -2139,7 +2172,7 @@ function render(dt){
     }
     for(const a of asteroids) drawAsteroid(a);
     for(const e of enemies) drawEnemy(e);
-    for(const b of bullets) drawBullet(b,'#4ff0ff');
+    for(const b of bullets) drawBullet(b,b.color);
     for(const b of enemyBullets) drawBullet(b,'#ff3d81');
     for(const m of missiles) drawMissile(m);
     for(const m of mines) drawMine(m);
@@ -2154,8 +2187,8 @@ function render(dt){
       const s = shakeMag*(shakeTime/0.3);
       ctx.translate(rand(-s,s), rand(-s,s));
     }
-    for(const b of arenaBullets) drawBullet(b,'#4ff0ff');
-    for(const b of remoteBullets) drawBullet(b,'#ff3d81');
+    for(const b of arenaBullets) drawBullet(b,b.color);
+    for(const b of remoteBullets) drawBullet(b,b.color);
     for(const m of arenaMissiles) drawMissile(m);
     for(const m of remoteMissiles) drawMissile(m);
     for(const m of arenaMines) drawMine(m);
@@ -2295,7 +2328,7 @@ function renderLoadout(){
     const equippedId = game.upgrades.equipped[slot];
     const chips = owned.map(id=>{
       const active = id===equippedId;
-      return `<button class="loadout-chip ${active?'active':''}" data-slot="${slot}" data-weapon="${id}">${WEAPONS[id].name}</button>`;
+      return `<button class="loadout-chip ${active?'active':''}" data-slot="${slot}" data-weapon="${id}"><span class="weapon-dot" style="--dot:${WEAPONS[id].color}"></span>${WEAPONS[id].name}</button>`;
     }).join('');
     const emptyChip = allowEmpty
       ? `<button class="loadout-chip ${equippedId?'':'active'}" data-slot="${slot}" data-weapon="">— None —</button>`
@@ -2321,7 +2354,7 @@ function renderWeaponShop(){
     const w = WEAPONS[id];
     const owned = game.upgrades.ownedWeapons.includes(id);
     return `<div class="upgrade-card weapon-card ${owned?'owned':''}">
-      <div class="upgrade-name">${w.name}</div>
+      <div class="upgrade-name"><span class="weapon-dot" style="--dot:${w.color}"></span>${w.name}</div>
       <div class="upgrade-stat">${w.desc}</div>
       ${owned
         ? `<div class="upgrade-next">OWNED</div>`
