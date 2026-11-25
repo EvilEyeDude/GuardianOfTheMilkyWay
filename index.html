@@ -2125,7 +2125,7 @@ function drawAsteroid(a){
 }
 function drawEnemy(e){
   ctx.save();
-  ctx.translate(e.x,e.y); ctx.rotate(e.angle);
+  ctx.translate(e.x,e.y); ctx.rotate(e.angle+3.14);
   const color = e.boss ? '#ffb84d' : (e.elite?'#ff3d81':'#ff7fae');
   ctx.strokeStyle = color;
   ctx.shadowColor = color; ctx.shadowBlur = e.boss?22:(e.elite?14:8);
